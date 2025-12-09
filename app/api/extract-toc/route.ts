@@ -67,25 +67,96 @@ export async function POST(request: NextRequest) {
 
 /**
  * Extract table of contents from PDF text
- * This function looks for common TOC patterns and formats them as HTML
+ * This function filters out front matter and extracts only the actual TOC section
  */
 function extractTOCFromPDF(text: string): string {
-  // Split text into lines
-  const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+  // Patterns to identify front matter and non-TOC content
+  const frontMatterPatterns = [
+    /credit\s*(hours?|amount|value)?/i,
+    /governing\s+body/i,
+    /board\s+number/i,
+    /ceu\s*(credits?)?/i,
+    /continuing\s+education/i,
+    /instructions?\s+(for|on)/i,
+    /how\s+to\s+(take|complete|use)/i,
+    /requirements?/i,
+    /prerequisites?/i,
+    /course\s+description/i,
+    /learning\s+objectives?/i,
+    /objectives?/i,
+    /overview/i,
+    /introduction\s*$/i,
+    /^\s*\d+\s*(credit|ceu|hour)/i,
+    /^\s*#\s*\d+/i, // Governing body numbers like "#123"
+  ];
 
-  // Common TOC patterns:
-  // 1. Lines with page numbers at the end (e.g., "Chapter 1 ................ 5")
-  // 2. Lines with dots/leaders before page numbers
-  // 3. Numbered items (1., 2., etc.)
-  // 4. Chapter/Section headings
+  // Patterns that indicate the end of TOC section
+  const tocEndPatterns = [
+    /^introduction$/i,
+    /^chapter\s+1\s*$/i,
+    /^section\s+1\s*$/i,
+    /^part\s+i\s*$/i,
+    /^getting\s+started/i,
+    /^how\s+to\s+use/i,
+    /^instructions/i,
+    /^course\s+information/i,
+    /^overview/i,
+  ];
+
+  // Find the TOC section start
+  const tocStartMatch = text.match(/(?:^|\n)\s*(?:Table\s+of\s+Contents|Contents|TABLE\s+OF\s+CONTENTS)\s*(?:\n|$)/i);
+  if (!tocStartMatch) {
+    return '<div class="toc-error">Unable to find "Table of Contents" heading in this PDF.</div>';
+  }
+
+  const tocStartIndex = tocStartMatch.index! + tocStartMatch[0].length;
+  
+  // Extract text starting from TOC heading, but limit to reasonable size
+  // Look for where TOC likely ends (usually before Introduction or Chapter 1)
+  let tocEndIndex = text.length;
+  const textAfterTOC = text.substring(tocStartIndex);
+  
+  // Find potential end markers
+  for (const pattern of tocEndPatterns) {
+    const match = textAfterTOC.match(new RegExp(`\\n\\s*${pattern.source}\\s*(?:\\n|$)`, 'i'));
+    if (match && match.index !== undefined) {
+      tocEndIndex = Math.min(tocEndIndex, tocStartIndex + match.index);
+    }
+  }
+
+  // If we found an end marker, use it; otherwise use a reasonable chunk (8000 chars)
+  const tocSection = text.substring(tocStartIndex, Math.min(tocEndIndex, tocStartIndex + 8000));
+  const lines = tocSection.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
   const tocItems: Array<{ title: string; page: number; level: number }> = [];
   const tocPattern = /^(.+?)\s*[.\s]+\s*(\d+)$/;
   const numberedPattern = /^(\d+[.)]\s*)(.+?)\s*[.\s]+\s*(\d+)$/;
-  const chapterPattern = /^(Chapter\s+\d+|Section\s+\d+|[IVX]+\.)\s*(.+?)\s*[.\s]+\s*(\d+)$/i;
+  const chapterPattern = /^(Chapter\s+\d+|Section\s+\d+|Part\s+[IVX\d]+|[IVX]+\.)\s*(.+?)\s*[.\s]+\s*(\d+)$/i;
+
+  let foundFirstTOCItem = false;
+  let consecutiveNonTOCLines = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    
+    // Skip lines that are clearly front matter
+    const isFrontMatter = frontMatterPatterns.some(pattern => pattern.test(line));
+    if (isFrontMatter) {
+      continue;
+    }
+
+    // Skip lines that are too short or look like metadata
+    if (line.length < 3 || line.match(/^[#\d\s\-\.]+$/)) {
+      continue;
+    }
+
+    // Stop if we hit content that's clearly not TOC
+    const isTOCEnd = tocEndPatterns.some(pattern => pattern.test(line));
+    if (isTOCEnd && foundFirstTOCItem) {
+      break;
+    }
+
+    let matched = false;
     
     // Try numbered pattern first (most specific)
     let match = line.match(numberedPattern);
@@ -93,69 +164,83 @@ function extractTOCFromPDF(text: string): string {
       const level = match[1].split('.').length;
       const title = match[2].trim();
       const page = parseInt(match[3], 10);
-      tocItems.push({ title, page, level });
-      continue;
-    }
-
-    // Try chapter pattern
-    match = line.match(chapterPattern);
-    if (match) {
-      const title = match[2].trim();
-      const page = parseInt(match[3], 10);
-      tocItems.push({ title, page, level: 1 });
-      continue;
-    }
-
-    // Try general TOC pattern (title ... page)
-    match = line.match(tocPattern);
-    if (match) {
-      const title = match[1].trim();
-      const page = parseInt(match[2], 10);
       
-      // Heuristic: if title starts with common TOC prefixes, it's likely a TOC item
-      if (title.match(/^(Chapter|Section|Part|Unit|\d+[.)])/i) || 
-          title.length > 3 && title.length < 100) {
-        // Determine level by indentation or numbering
-        const level = title.match(/^\d+\.\d+/) ? 2 : 
-                     title.match(/^\d+\.\d+\.\d+/) ? 3 : 1;
+      // Validate it's a real TOC item
+      if (page > 0 && page < 1000 && title.length > 2 && !isFrontMatterPatterns.some(p => p.test(title))) {
         tocItems.push({ title, page, level });
+        foundFirstTOCItem = true;
+        consecutiveNonTOCLines = 0;
+        matched = true;
       }
     }
-  }
 
-  // If we found TOC items, format them as HTML
-  if (tocItems.length > 0) {
-    return formatTOCAsHTML(tocItems);
-  }
-
-  // Fallback: try to find a TOC section in the text
-  // Look for "Table of Contents" or "Contents" heading
-  const tocStartIndex = text.search(/Table\s+of\s+Contents|Contents\s*$/i);
-  if (tocStartIndex !== -1) {
-    // Extract a reasonable chunk after TOC heading
-    const tocSection = text.substring(tocStartIndex, tocStartIndex + 5000);
-    const tocLines = tocSection.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-    
-    for (const line of tocLines) {
-      const match = line.match(tocPattern);
+    if (!matched) {
+      // Try chapter pattern
+      match = line.match(chapterPattern);
       if (match) {
-        const title = match[1].trim();
-        const page = parseInt(match[2], 10);
-        if (title.length > 2 && title.length < 150 && page > 0 && page < 1000) {
-          const level = title.match(/^\d+\.\d+/) ? 2 : 
-                       title.match(/^\d+\.\d+\.\d+/) ? 3 : 1;
-          tocItems.push({ title, page, level });
+        const title = match[2].trim();
+        const page = parseInt(match[3], 10);
+        
+        if (page > 0 && page < 1000 && title.length > 2 && !isFrontMatterPatterns.some(p => p.test(title))) {
+          tocItems.push({ title, page, level: 1 });
+          foundFirstTOCItem = true;
+          consecutiveNonTOCLines = 0;
+          matched = true;
         }
       }
     }
 
-    if (tocItems.length > 0) {
-      return formatTOCAsHTML(tocItems);
+    if (!matched) {
+      // Try general TOC pattern (title ... page)
+      match = line.match(tocPattern);
+      if (match) {
+        const title = match[1].trim();
+        const page = parseInt(match[2], 10);
+        
+        // Validate it's a real TOC item
+        if (page > 0 && page < 1000 && 
+            title.length > 2 && title.length < 150 &&
+            !isFrontMatterPatterns.some(p => p.test(title)) &&
+            !title.match(/^(Page|P\.|P\s*\d+)/i)) {
+          
+          // Heuristic: if title starts with common TOC prefixes, it's likely a TOC item
+          if (title.match(/^(Chapter|Section|Part|Unit|Module|Lesson|\d+[.)])/i) || 
+              (title.length > 3 && title.length < 100)) {
+            // Determine level by indentation or numbering
+            const level = title.match(/^\d+\.\d+\.\d+/) ? 3 :
+                         title.match(/^\d+\.\d+/) ? 2 : 1;
+            tocItems.push({ title, page, level });
+            foundFirstTOCItem = true;
+            consecutiveNonTOCLines = 0;
+            matched = true;
+          }
+        }
+      }
+    }
+
+    // If we haven't matched and we've already found TOC items, count non-TOC lines
+    if (!matched && foundFirstTOCItem) {
+      consecutiveNonTOCLines++;
+      // If we hit 5+ consecutive non-TOC lines after finding TOC items, we're probably done
+      if (consecutiveNonTOCLines >= 5) {
+        break;
+      }
     }
   }
 
-  // Last resort: return a message indicating TOC couldn't be extracted
-  return '<div class="toc-error">Unable to automatically extract table of contents from this PDF. The PDF may not have a structured TOC, or it may be in an image format.</div>';
+  // Filter out any remaining front matter that might have slipped through
+  const filteredItems = tocItems.filter(item => {
+    const titleLower = item.title.toLowerCase();
+    return !frontMatterPatterns.some(pattern => pattern.test(item.title)) &&
+           !titleLower.match(/^(credit|ceu|hour|governing|board|instruction|requirement|prerequisite|objective|overview)/i) &&
+           item.title.length > 2;
+  });
+
+  if (filteredItems.length > 0) {
+    return formatTOCAsHTML(filteredItems);
+  }
+
+  return '<div class="toc-error">Unable to extract table of contents from this PDF. The TOC section may be in an image format or have an unusual structure.</div>';
 }
 
 /**
