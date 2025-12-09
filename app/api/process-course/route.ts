@@ -196,7 +196,7 @@ function extractTOCFromPDF(text: string): string {
       const page = parseInt(match[3], 10);
       
       // Validate it's a real TOC item
-      if (page > 0 && page < 1000 && title.length > 2 && !isFrontMatterPatterns.some(p => p.test(title))) {
+      if (page > 0 && page < 1000 && title.length > 2 && !frontMatterPatterns.some(p => p.test(title))) {
         tocItems.push({ title, page, level });
         foundFirstTOCItem = true;
         consecutiveNonTOCLines = 0;
@@ -211,7 +211,7 @@ function extractTOCFromPDF(text: string): string {
         const title = match[2].trim();
         const page = parseInt(match[3], 10);
         
-        if (page > 0 && page < 1000 && title.length > 2 && !isFrontMatterPatterns.some(p => p.test(title))) {
+        if (page > 0 && page < 1000 && title.length > 2 && !frontMatterPatterns.some(p => p.test(title))) {
           tocItems.push({ title, page, level: 1 });
           foundFirstTOCItem = true;
           consecutiveNonTOCLines = 0;
@@ -230,7 +230,7 @@ function extractTOCFromPDF(text: string): string {
         // Validate it's a real TOC item
         if (page > 0 && page < 1000 && 
             title.length > 2 && title.length < 150 &&
-            !isFrontMatterPatterns.some(p => p.test(title)) &&
+            !frontMatterPatterns.some(p => p.test(title)) &&
             !title.match(/^(Page|P\.|P\s*\d+)/i)) {
           
           // Heuristic: if title starts with common TOC prefixes, it's likely a TOC item
