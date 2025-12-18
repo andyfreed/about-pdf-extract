@@ -17,6 +17,8 @@ export default function Home() {
   const [courseSearchTerm, setCourseSearchTerm] = useState('');
   const [showCourseDropdown, setShowCourseDropdown] = useState(false);
   const [selectedCourse, setSelectedCourse] = useState<any>(null);
+  const [coursePdfs, setCoursePdfs] = useState<{ toc_pdf: any; full_pdf: any } | null>(null);
+  const [loadingPdfs, setLoadingPdfs] = useState(false);
   const [tocHtml, setTocHtml] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -48,6 +50,7 @@ export default function Home() {
     setSelectedCourseId('');
     setSelectedCourse(null);
     setCourseSearchTerm('');
+    setCoursePdfs(null);
     setTocHtml(null);
 
     try {
@@ -83,12 +86,38 @@ export default function Home() {
     );
   }, [courses, courseSearchTerm]);
 
-  const handleCourseSelect = (courseId: string) => {
+  const handleCourseSelect = async (courseId: string) => {
     setSelectedCourseId(courseId);
     const course = courses.find(c => c.id.toString() === courseId);
     setSelectedCourse(course || null);
     setCourseSearchTerm(course ? course.title : '');
     setShowCourseDropdown(false);
+    setCoursePdfs(null);
+    setTocHtml(null);
+
+    // Fetch PDF information for the selected course
+    if (course && wordpressUrl) {
+      setLoadingPdfs(true);
+      try {
+        const params = new URLSearchParams({
+          wordpress_url: wordpressUrl,
+        });
+        if (apiKey) {
+          params.append('api_key', apiKey);
+        }
+
+        const response = await fetch(`/api/courses/${courseId}/pdfs?${params.toString()}`);
+        const data = await response.json();
+
+        if (response.ok && data.data?.pdfs) {
+          setCoursePdfs(data.data.pdfs);
+        }
+      } catch (err: any) {
+        console.error('Error fetching PDFs:', err);
+      } finally {
+        setLoadingPdfs(false);
+      }
+    }
   };
 
   const processCourse = async () => {
@@ -282,24 +311,64 @@ export default function Home() {
               <div style={{ fontSize: '12px', color: '#666' }}>
                 ID: {selectedCourse.id} {selectedCourse.product_id ? `| Product ID: ${selectedCourse.product_id}` : ''}
               </div>
+              {loadingPdfs && (
+                <div style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
+                  Loading PDF information...
+                </div>
+              )}
+              {coursePdfs && (
+                <div style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
+                  {coursePdfs.full_pdf && (
+                    <div>Full PDF: {coursePdfs.full_pdf.filename}</div>
+                  )}
+                  {coursePdfs.toc_pdf && (
+                    <div>TOC PDF: {coursePdfs.toc_pdf.filename}</div>
+                  )}
+                </div>
+              )}
             </div>
           )}
-          <button
-            onClick={processCourse}
-            disabled={processing || !selectedCourse}
-            style={{
-              marginTop: '15px',
-              padding: '10px 20px',
-              fontSize: '16px',
-              backgroundColor: selectedCourse ? '#28a745' : '#ccc',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: processing || !selectedCourse ? 'not-allowed' : 'pointer',
-            }}
-          >
-            {processing ? 'Processing...' : 'Extract Table of Contents'}
-          </button>
+          <div style={{ marginTop: '15px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            {coursePdfs?.full_pdf && (
+              <button
+                onClick={() => {
+                  if (coursePdfs.full_pdf?.url) {
+                    const a = document.createElement('a');
+                    a.href = coursePdfs.full_pdf.url;
+                    a.download = coursePdfs.full_pdf.filename || `course-${selectedCourse?.id}-full.pdf`;
+                    a.target = '_blank';
+                    a.click();
+                  }
+                }}
+                style={{
+                  padding: '10px 20px',
+                  fontSize: '16px',
+                  backgroundColor: '#0070f3',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                }}
+              >
+                Download Full PDF
+              </button>
+            )}
+            <button
+              onClick={processCourse}
+              disabled={processing || !selectedCourse}
+              style={{
+                padding: '10px 20px',
+                fontSize: '16px',
+                backgroundColor: selectedCourse ? '#28a745' : '#ccc',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: processing || !selectedCourse ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {processing ? 'Processing...' : 'Extract Table of Contents'}
+            </button>
+          </div>
         </div>
       )}
 
